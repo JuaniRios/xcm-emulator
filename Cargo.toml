@@ -1,0 +1,5 @@
+[workspace]
+members = [
+	"xcm-emulator/xcmp-bug",
+	"xcm-emulator"
+]
