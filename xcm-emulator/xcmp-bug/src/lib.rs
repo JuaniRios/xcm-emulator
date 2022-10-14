@@ -64,6 +64,10 @@ pub fn acurast_ext(para_id: u32) -> sp_io::TestExternalities {
 	.assimilate_storage(&mut t)
 	.unwrap();
 
+	let pallet_xcm_config = pallet_xcm::GenesisConfig::default();
+	<pallet_xcm::GenesisConfig as GenesisBuild<Runtime, _>>::assimilate_storage(&pallet_xcm_config, &mut t)
+		.unwrap();
+
 	let mut ext = sp_io::TestExternalities::new(t);
 	ext.execute_with(|| System::set_block_number(1));
 	ext
@@ -183,6 +187,105 @@ mod tests {
 
 	type StatemintMinter = pallet_assets::Pallet<statemint_runtime::Runtime>;
 	type AcurastMinter = pallet_assets::Pallet<statemint_runtime::Runtime>;
+
+	#[test]
+	fn xcmp_panic() {
+		Network::reset();
+		let acurast_sovereign: sp_runtime::AccountId32 = Sibling::from(2000).into_account_truncating();
+		// create and mint to alice new fungible with id 1
+		StatemintParachain::execute_with(|| {
+			// create token 1
+			let result = StatemintMinter::create(
+				statemint_runtime::Origin::signed(ALICE),
+				1,
+				sp_runtime::MultiAddress::Id(ALICE),
+				10
+			);
+			assert_ok!(result);
+
+			// mint 1500 to alice
+			let result = StatemintMinter::mint(
+				statemint_runtime::Origin::signed(ALICE),
+				1,
+				sp_runtime::MultiAddress::Id(ALICE),
+				1500
+			);
+			assert_ok!(result);
+			let alice_balance = StatemintMinter::balance(
+				1,
+				&ALICE,
+			);
+			assert_eq!(alice_balance, 1500);
+
+			// acurast sovereign account needs a minimum balance of DOT to be a valid account.
+			let deposit_result = statemint_runtime::Balances::deposit_creating(
+				&acurast_sovereign,
+				1_000_000_000_000,
+			);
+			let acurast_balance = statemint_runtime::Balances::total_balance(&acurast_sovereign);
+			assert_eq!(acurast_balance, 1_000_000_000_000);
+
+			// mint 1500 of token 1 to acurast sovereign acc
+			let result = StatemintMinter::mint(
+				statemint_runtime::Origin::signed(ALICE),
+				1,
+				sp_runtime::MultiAddress::Id(acurast_sovereign.clone()),
+				1500
+			);
+			assert_ok!(result);
+			let acurast_token_balance = StatemintMinter::balance(
+				1,
+				&acurast_sovereign,
+			);
+			assert_eq!(acurast_token_balance, 1500);
+		});
+
+		// create same asset in acurast
+		AcurastParachain::execute_with(|| {
+			let result = AcurastMinter::create(
+				statemint_runtime::Origin::signed(ALICE),
+				1,
+				sp_runtime::MultiAddress::Id(ALICE),
+				10
+			);
+			assert_ok!(result);
+		});
+
+		// reserve backed transfer of token 1 from statemint to acurast
+		StatemintParachain::execute_with(|| {
+			let xcm = StatemintXcmPallet::reserve_transfer_assets(
+				statemint_runtime::Origin::signed(ALICE),
+				Box::new(MultiLocation { parents: 1, interior: X1(Parachain(2000)) }.into()),
+				Box::new(X1(Junction::AccountId32 {
+					network: NetworkId::Any,
+					id: ALICE.into()
+				}).into().into()),
+				Box::new(vec![
+					MultiAsset {
+						id: Concrete(X2(PalletInstance(50), GeneralIndex(1)).into()),
+						fun: Fungible(500)
+					},
+					MultiAsset {
+						id: Concrete(Parent.into()),
+						fun: Fungible(INITIAL_BALANCE / 10)
+					},
+				].into()),
+				1,
+			);
+			assert_ok!(xcm);
+		});
+
+		StatemintParachain::execute_with(|| {
+			let _events = statemint_runtime::System::events();
+			println!("stop");
+		});
+
+		AcurastParachain::execute_with(|| {
+			let _events = acurast_runtime::System::events();
+			let alice_balance = AcurastMinter::balance(1, &ALICE);
+			assert_eq!(alice_balance, 500);
+		});
+	}
 
 	#[test]
 	fn dmp() {
@@ -362,116 +465,6 @@ mod tests {
 
 			assert_eq!(alice_balance, 1500);
 		})
-	}
-
-	#[test]
-	fn new_fungible_reserve_transfer() {
-		Network::reset();
-		let acurast_sovereign: sp_runtime::AccountId32 = Sibling::from(2000).into_account_truncating();
-		// create and mint to alice new fungible with id 1
-		StatemintParachain::execute_with(|| {
-			// create token 1
-			let result = StatemintMinter::create(
-				statemint_runtime::Origin::signed(ALICE),
-				1,
-				sp_runtime::MultiAddress::Id(ALICE),
-				10
-			);
-			assert_ok!(result);
-
-			// mint 1500 to alice
-			let result = StatemintMinter::mint(
-				statemint_runtime::Origin::signed(ALICE),
-				1,
-				sp_runtime::MultiAddress::Id(ALICE),
-				1500
-			);
-			assert_ok!(result);
-			let alice_balance = StatemintMinter::balance(
-				1,
-				&ALICE,
-			);
-			assert_eq!(alice_balance, 1500);
-
-			// acurast sovereign account needs a minimum balance of DOT to be a valid account.
-			let deposit_result = statemint_runtime::Balances::deposit_creating(
-				&acurast_sovereign,
-				1_000_000_000_000,
-			);
-			let acurast_balance = statemint_runtime::Balances::total_balance(&acurast_sovereign);
-			assert_eq!(acurast_balance, 1_000_000_000_000);
-
-			// mint 1500 of token 1 to acurast sovereign acc
-			let result = StatemintMinter::mint(
-				statemint_runtime::Origin::signed(ALICE),
-				1,
-				sp_runtime::MultiAddress::Id(acurast_sovereign.clone()),
-				1500
-			);
-			assert_ok!(result);
-			let acurast_token_balance = StatemintMinter::balance(
-				1,
-				&acurast_sovereign,
-			);
-			assert_eq!(acurast_token_balance, 1500);
-		});
-
-		// create same asset in acurast
-		AcurastParachain::execute_with(|| {
-			let result = AcurastMinter::create(
-				statemint_runtime::Origin::signed(ALICE),
-				1,
-				sp_runtime::MultiAddress::Id(ALICE),
-				10
-			);
-			assert_ok!(result);
-		});
-
-		// reserve backed transfer of token 1 from statemint to acurast
-		StatemintParachain::execute_with(|| {
-			let xcm = StatemintXcmPallet::reserve_transfer_assets(
-				statemint_runtime::Origin::signed(ALICE),
-				Box::new(MultiLocation{parents: 1, interior: X1(Parachain(2000))}.into()),
-				Box::new(X1(Junction::AccountId32 {
-					network: NetworkId::Any,
-					id: ALICE.into()
-				}).into().into()),
-				Box::new(vec![
-
-					MultiAsset {
-						id: Concrete(X2(PalletInstance(50), GeneralIndex(1)).into()),
-						fun: Fungible(500)
-					},
-					MultiAsset {
-						id: Concrete(Parent.into()),
-						fun: Fungible(INITIAL_BALANCE/10)
-					},
-				].into()),
-				1,
-			);
-			assert_ok!(xcm);
-		});
-
-		StatemintParachain::execute_with(|| {
-			let _events = statemint_runtime::System::events();
-			println!("stop");
-		});
-
-		AcurastParachain::execute_with(|| {
-			let _events = acurast_runtime::System::events();
-			let alice_balance = AcurastMinter::balance(1, &ALICE);
-			assert_eq!(alice_balance, 500);
-		})
-
-
-
-
-
-
-
-
-
-
 	}
 
 	// Helper function for forming buy execution message
